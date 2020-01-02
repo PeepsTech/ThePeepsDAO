@@ -1,4 +1,4 @@
-var PeepsMoloch = artifacts.require('../contracts/PeepsMoloch.sol');
+var PeepsMoloch = artifacts.require('../contracts/PeepsDAO.sol');
 
 //standard testing params (probably not good for production)
 const summoner = ""; //choose your summoner
@@ -10,7 +10,7 @@ const emergencyExitWait = 2;
 const proposalDeposit = 2;
 const dilutionBound = 3;
 const processingReward = 2;
-const minDonation = 5; //min tribute required to join <-- this calculates shares issued 
+const minDonation = 5; //min tribute required to join <-- this calculates shares issued
 const canQuit = false; //determines whether member needs admin permission to rage quit
 
 var GuildBank = artifacts.require("GuildBank");
