@@ -6,57 +6,6 @@ import "https://github.com/OpenZeppelin/openzeppelin-solidity/contracts/ownershi
 import "https://github.com/OpenZeppelin/openzeppelin-solidity/contracts/access/Roles.sol";
 import "https://github.com/OpenZeppelin/openzeppelin-solidity/contracts/utils/ReentrancyGuard.sol";
 
-// *******************
-// GuildBank Contract
-// *******************
-
-/*GuildBank is created when a new PeepsMoloch is launched,
-so interacting with the GuildBank should be done by referencing the
-GuildBank associated w/ that PeepsMoloch */
-
-contract GuildBank  {
-    address public owner;
-
-    constructor () public {
-        owner = msg.sender;
-    }
-
-    modifier onlyOwner() {
-        require(msg.sender == owner);
-        _;
-    }
-
-    event Withdrawal(address indexed receiver, address indexed tokenAddress, uint256 amount);
-
-    function withdraw(address receiver, uint256 shares, uint256 totalShares, IERC20[] memory approvedTokens) public onlyOwner returns (bool) {
-        for (uint256 i = 0; i < approvedTokens.length; i++) {
-            uint256 amount = fairShare(approvedTokens[i].balanceOf(address(this)), shares, totalShares);
-            emit Withdrawal(receiver, address(approvedTokens[i]), amount);
-            require(approvedTokens[i].transfer(receiver, amount));
-        }
-        return true;
-    }
-
-    function withdrawToken(IERC20 token, address receiver, uint256 amount) public onlyOwner returns (bool) {
-        emit Withdrawal(receiver, address(token), amount);
-        return token.transfer(receiver, amount);
-    }
-
-    function fairShare(uint256 balance, uint256 shares, uint256 totalShares) internal pure returns (uint256) {
-        require(totalShares != 0);
-
-        if (balance == 0) { return 0; }
-
-        uint256 prod = balance * shares;
-
-        if (prod / balance == shares) { // no overflow in multiplication above?
-            return prod / totalShares;
-        }
-
-        return (balance / totalShares) * shares;
-    }
-}
-
 
 // *******************
 // PeepsMoloch Contract
@@ -80,8 +29,8 @@ contract PeepsMoloch is Context, ReentrancyGuard {
     uint256 public minDonation; // min donation to join
     bool public canQuit;
 
-    IERC20 public depositToken; // reference to the deposit token
-    GuildBank public guildBank; // guild bank contract reference
+    address public depositToken; // reference to the deposit token
+    //GuildBank public guildBank; // guild bank contract reference
 
     // HARD-CODED LIMITS
     // These numbers are quite arbitrary; they are small enough to avoid overflows when doing calculations
@@ -90,31 +39,41 @@ contract PeepsMoloch is Context, ReentrancyGuard {
     uint256 constant MAX_GRACE_PERIOD_LENGTH = 10**18; // maximum length of grace period
     uint256 constant MAX_DILUTION_BOUND = 10**18; // maximum dilution bound
     uint256 constant MAX_NUMBER_OF_SHARES = 10**18; // maximum number of shares that can be minted
+    uint256 constant MAX_TOKEN_WHITELIST_COUNT = 25; // maximum number of whitelisted tokens
+    uint256 constant MAX_TOKEN_GUILDBANK_COUNT = 20; // maximum number of tokens with non-zero balance in guildbank
 
     // ***************
     // EVENTS
     // ***************
-    event SubmitProposal(uint256 proposalIndex, address indexed delegateKey, address indexed memberAddress, address indexed applicant,uint256 tributeOffered, address tributeToken, uint256 sharesRequested, address tokenToWhitelist, address memberToKick, uint256 paymentRequested, address paymentToken);
-    event SubmitVote(uint256 indexed proposalQueueIndex, address indexed delegateKey, address indexed memberAddress, uint8 uintVote);
+    event SummonComplete(address indexed summoner, address depositToken, uint256 summoningTime, uint256 periodDuration, uint256 votingPeriodLength, uint256 gracePeriodLength, uint256 proposalDeposit, uint256 processingReward);
+    event SubmitProposal(address indexed applicant, uint256 sharesRequested, uint256 tributeOffered, address tributeToken, uint256 paymentRequested, address paymentToken, string details, bool[5] flags, uint256 proposalId, address indexed memberAddress);
+    event SubmitVote(uint256 indexed proposalIndex, address indexed delegateKey, address indexed memberAddress, uint8 uintVote);
     event Ragequit(address indexed memberAddress, uint256 sharesToBurn, address[] tokenList);
     event CancelProposal(uint256 indexed proposalIndex, address applicantAddress);
     event UpdateDelegateKey(address indexed memberAddress, address newDelegateKey);
-    event ProcessProposal(uint256 indexed proposalQueueIndex, address indexed applicant, address indexed memberAddress, uint256 tributeOffered, uint256 sharesRequested, bool didPass);
+    event ProcessProposal(uint256 indexed proposalIndex, address indexed applicant, address indexed memberAddress, uint256 tributeOffered, uint256 sharesRequested, bool didPass);
+    event ProcessGuildKickProposal(uint256 indexed proposalIndex, uint256 indexed proposalId, bool didPass);
     event SponsorProposal(address indexed delegateKey, address indexed memberAddress, uint256 proposalIndex, uint256 proposalQueueIndex, uint256 startingPeriod);
-    event SummonComplete(address indexed summoner, uint256 shares);
     event MemberAdded(address indexed _newMemberAddress, uint256 _tributeAmount, uint256 _shares);
     event AdminAdded(address indexed account);
     event AdminRemoved(address indexed account);
     event CanQuit(address indexed member);
     event TokenAdded (address indexed _tokenToWhitelist);
+    event Withdraw(address indexed memberAddress, address token, uint256 amount);
 
     // *******************
     // INTERNAL ACCOUNTING
     // *******************
     uint256 public proposalCount = 0; // total proposals submitted
     uint256 public totalShares = 0; // total shares across all members
-    uint256 public totalContributed = 0; // total member contributions to guild bank
-    uint256 public totalSharesRequested = 0; // total shares that have been requested in unprocessed proposals
+    uint256 public totalDepositTokens = 0; // total number of deposit tokens in guild bank
+    uint256 public totalGuildBankTokens = 0; // total tokens with non-zero balance in guild bank
+
+    address public constant GUILD = address(0xdead);
+    address public constant ESCROW = address(0xbeef);
+    address public constant TOTAL = address(0xbabe);
+
+    mapping (address => mapping(address => uint256)) public userTokenBalances; // userTokenBalances[userAddress][tokenAddress]
 
     enum Vote {
         Null, // default value, counted as abstention
@@ -137,9 +96,9 @@ contract PeepsMoloch is Context, ReentrancyGuard {
         address sponsor; // the member who sponsored the proposal
         uint256 sharesRequested; // the # of shares the applicant is requesting
         uint256 tributeOffered; // amount of tokens offered as tribute
-        IERC20 tributeToken; // token being offered as tribute
+        address tributeToken; // tribute token contract reference
         uint256 paymentRequested; // the payments requested for each applicant
-        IERC20 paymentToken; // token to send payment in
+        address paymentToken; // token to send payment in
         uint256 startingPeriod; // the period in which voting can start for this proposal
         uint256 yesVotes; // the total number of YES votes for this proposal
         uint256 noVotes; // the total number of NO votes for this proposal
@@ -155,25 +114,27 @@ contract PeepsMoloch is Context, ReentrancyGuard {
     }
 
     mapping (address => bool) public tokenWhitelist;
-    IERC20[] public approvedTokens; //deployed version will set to be only ETH or DAI.
+    address[] public approvedTokens; //deployed version will set to be only ETH or DAI.
 
     mapping (address => bool) public proposedToKick; // true if a member has been proposed to be kicked (to avoid duplicate guild kick proposals)
 
-    mapping (address => Member) public members;
-    mapping (address => address) public memberAddressByDelegateKey;
-    address[] public memberAccts;
+    //mapping of members by address
+    mapping(address => Member) public members;
+    //mapping of delegates by members
+    mapping(address => address) public memberAddressByDelegateKey;
 
-    Roles.Role private _admins;
-
-    // proposals by ID
-    mapping (uint256 => Proposal) public proposals;
-
-    // the queue of proposals (only store a reference by the proposal id)
+    //proposal mapping
+    mapping(uint256 => Proposal) public proposals;
+    //proposal queue for tracking number and order of proposals
     uint256[] public proposalQueue;
+
 
     // *********
     // MODIFIERS
     // *********
+
+    Roles.Role private _admins;
+
     modifier onlyMember {
         require(members[msg.sender].shares > 0, "not a member");
         _;
@@ -220,14 +181,16 @@ contract PeepsMoloch is Context, ReentrancyGuard {
         // first approved token is the deposit token, so choice will be between ETH or DAI
         depositToken = IERC20(_approvedTokens[0]);
 
-        for (uint256 i=0; i < _approvedTokens.length; i++) {
-          require(_approvedTokens[i] != address(0), "approvedToken cannot be 0");
-          require(!tokenWhitelist[_approvedTokens[i]], "duplicate approved token");
-          tokenWhitelist[_approvedTokens[i]] = true;
-          approvedTokens.push(IERC20(_approvedTokens[i]));
-          }
+         emit SummonComplete(summoner, depositToken, now, _periodDuration, _votingPeriodLength, _gracePeriodLength, _proposalDeposit,  _processingReward);
 
-        guildBank = new GuildBank();
+        for (uint256 i = 0; i < _approvedTokens.length; i++) {
+            require(_approvedTokens[i] != address(0), "_approvedToken cannot be 0");
+            require(!tokenWhitelist[_approvedTokens[i]], "duplicate approved token");
+            tokenWhitelist[_approvedTokens[i]] = true;
+            approvedTokens.push(_approvedTokens[i]);
+        }
+
+        //guildBank = new GuildBank();
 
         periodDuration = _periodDuration;
         votingPeriodLength = _votingPeriodLength;
@@ -246,14 +209,13 @@ contract PeepsMoloch is Context, ReentrancyGuard {
         totalShares = 1;
         _addAdmin(summoner);
 
-        emit SummonComplete(summoner, 1);
     }
 
     // ******************
     // PROPOSAL FUNCTIONS
     // ******************
 
-    function submitProposal(
+     function submitProposal(
         address applicant,
         uint256 sharesRequested,
         uint256 tributeOffered,
@@ -261,105 +223,89 @@ contract PeepsMoloch is Context, ReentrancyGuard {
         uint256 paymentRequested,
         address paymentToken,
         string memory details
-    )
-        public nonReentrant
-    {
-        require(tokenWhitelist[tributeToken], "tribute token is not whitelisted");
-        require(tokenWhitelist[paymentToken], "payment token is not whitelisted");
-        require(members[applicant].jailed == 0, "proposal applicant must not be jailed");
+    ) public nonReentrant returns (uint256 proposalId) {
+        require(sharesRequested <= MAX_NUMBER_OF_SHARES, "too many shares requested");
+        require(tokenWhitelist[tributeToken], "tributeToken is not whitelisted");
+        require(tokenWhitelist[paymentToken], "payment is not whitelisted");
         require(applicant != address(0), "applicant cannot be 0");
+        require(applicant != GUILD && applicant != ESCROW && applicant != TOTAL, "applicant address cannot be reserved");
+        require(members[applicant].jailed == 0, "proposal applicant must not be jailed");
 
-        // collect tribute from applicant and store it in the PeepsMoloch until the proposal is processed
+        // collect proposal deposit from proposal submitter
+        require(IERC20(depositToken).transferFrom(msg.sender, address(this), proposalDeposit), "proposal deposit token transfer failed");
+        unsafeAddToBalance(ESCROW, depositToken, proposalDeposit);
+
+        // collect tribute from proposer and store it in the Moloch until the proposal is processed
         require(IERC20(tributeToken).transferFrom(msg.sender, address(this), tributeOffered), "tribute token transfer failed");
+        unsafeAddToBalance(ESCROW, tributeToken, tributeOffered);
 
-        bool[5] memory flags;
+        bool[5] memory flags; // [sponsored, processed, didPass, cancelled, whitelist, guildkick]
 
-        // create proposal...
-        Proposal memory proposal = Proposal({
-            applicant: applicant,
-            proposer: msg.sender,
-            sponsor: address(0),
-            sharesRequested: sharesRequested,
-            tributeOffered: tributeOffered,
-            tributeToken: IERC20(tributeToken),
-            paymentRequested: paymentRequested,
-            paymentToken: IERC20(paymentToken),
-            startingPeriod: 0,
-            yesVotes: 0,
-            noVotes: 0,
-            flags: flags,
-            details: details,
-            maxTotalSharesAtYesVote: 0
-        });
-
-        proposals[proposalCount] = proposal; // save proposal by its id
-
-        address memberAddress = memberAddressByDelegateKey[msg.sender];
-        emit SubmitProposal(proposalCount, msg.sender, memberAddress, applicant, tributeOffered, tributeToken, sharesRequested, address(0), address(0), paymentRequested, paymentToken);
-
-        proposalCount += 1; // increment proposal counter
-
+        _submitProposal(applicant, sharesRequested, tributeOffered, tributeToken, paymentRequested, paymentToken, details, flags);
+        return proposalCount - 1; // return proposalId - contracts calling submit might want it
     }
 
-    function submitGuildKickProposal(address memberToKick, string memory details) public nonReentrant onlyMember {
-        require(members[memberToKick].shares > 0, "member must have at least one share");
+    function submitGuildKickProposal(address memberToKick, string memory details) public nonReentrant returns (uint256 proposalId) {
+        Member memory member = members[memberToKick];
+
+        require(member.shares > 0, "member must have at least one share");
         require(members[memberToKick].jailed == 0, "member must not already be jailed");
 
+        bool[5] memory flags; // [sponsored, processed, didPass, cancelled, whitelist, guildkick]
+        flags[4] = true; // guild kick
 
-        bool[5] memory flags;
-        flags[4] = true; // guild kick proposal = true
+        _submitProposal(memberToKick, 0, 0, 0, address(0), 0, address(0), details, flags);
+        return proposalCount - 1;
+    }
 
-        // create proposal ...
+    function _submitProposal(
+        address applicant,
+        uint256 sharesRequested,
+        uint256 tributeOffered,
+        address tributeToken,
+        uint256 paymentRequested,
+        address paymentToken,
+        string memory details,
+        bool[6] memory flags
+    ) internal {
         Proposal memory proposal = Proposal({
-            applicant: memberToKick, // applicant = memberToKick
-            proposer: msg.sender,
-            sponsor: address(0),
-            sharesRequested: 0,
-            tributeOffered: 0,
-            tributeToken: IERC20(address(0)),
-            paymentRequested: 0,
-            paymentToken: IERC20(address(0)),
-            startingPeriod: 0,
-            yesVotes: 0,
-            noVotes: 0,
-            flags: flags,
-            details: details,
-            maxTotalSharesAtYesVote: 0
+            applicant : applicant,
+            proposer : msg.sender,
+            sponsor : address(0),
+            sharesRequested : sharesRequested,
+            tributeOffered : tributeOffered,
+            tributeToken : tributeToken,
+            paymentRequested : paymentRequested,
+            paymentToken : paymentToken,
+            startingPeriod : 0,
+            yesVotes : 0,
+            noVotes : 0,
+            flags : flags,
+            details : details,
+            maxTotalSharesAndLootAtYesVote : 0
         });
 
-        proposals[proposalCount] = proposal; // save proposal by its id
-
+        proposals[proposalCount] = proposal;
         address memberAddress = memberAddressByDelegateKey[msg.sender];
-        emit SubmitProposal(proposalCount, msg.sender, memberAddress, address(0), 0, address(0), 0, address(0), memberToKick, 0, address(0));
-
-        proposalCount += 1; // increment proposal counter
-
+        // NOTE: argument order matters, avoid stack too deep
+        emit SubmitProposal(applicant, sharesRequested, tributeOffered, tributeToken, paymentRequested, paymentToken, details, flags, proposalCount, memberAddress);
+        proposalCount += 1;
     }
 
     function sponsorProposal(uint256 proposalId) public nonReentrant onlyAdmin {
-        // collect proposal deposit from proposer and store it in the PeepsMoloch until the proposal is processed
-        require(depositToken.transferFrom(msg.sender, address(this), proposalDeposit), "proposal deposit token transfer failed");
+        // collect proposal deposit from sponsor and store it in the Moloch until the proposal is processed
+
 
         Proposal storage proposal = proposals[proposalId];
 
-        require(proposal.proposer != address(0), "proposal must have been proposed");
+        require(proposal.proposer != address(0), 'proposal must have been proposed');
         require(!proposal.flags[0], "proposal has already been sponsored");
         require(!proposal.flags[3], "proposal has been cancelled");
         require(members[proposal.applicant].jailed == 0, "proposal applicant must not be jailed");
 
-
-        // gkick proposal
         if (proposal.flags[4]) {
-            require(!proposedToKick[proposal.applicant], "already proposed to kick");
+            require(!proposedToKick[proposal.applicant], 'already proposed to kick');
             proposedToKick[proposal.applicant] = true;
-
-        // standard proposal
-        } else {
-            // Make sure we won't run into overflows when doing calculations with shares.
-            // Note that totalShares + totalSharesRequested + sharesRequested is an upper bound
-            // on the number of shares that can exist until this proposal has been processed.
-            require(totalShares.add(totalSharesRequested).add(proposal.sharesRequested) <= MAX_NUMBER_OF_SHARES, "too many shares requested");
-            totalSharesRequested = totalSharesRequested.add(proposal.sharesRequested);
         }
 
         // compute startingPeriod for proposal
@@ -372,14 +318,13 @@ contract PeepsMoloch is Context, ReentrancyGuard {
 
         address memberAddress = memberAddressByDelegateKey[msg.sender];
         proposal.sponsor = memberAddress;
-        proposal.flags[0] = true;
 
-        // ... and append it to the queue by its id
+        proposal.flags[0] = true; // sponsored
+
+        // append proposal to the queue
         proposalQueue.push(proposalId);
 
-        uint256 proposalQueueIndex = proposalQueue.length.sub(1);
-        emit SponsorProposal(msg.sender, memberAddress, proposalId, proposalQueueIndex, startingPeriod);
-
+        emit SponsorProposal(msg.sender, memberAddress, proposalId, proposalQueue.length.sub(1), startingPeriod);
     }
 
     function submitVote(uint256 proposalIndex, uint8 uintVote) public nonReentrant onlyDelegate {
@@ -423,130 +368,157 @@ contract PeepsMoloch is Context, ReentrancyGuard {
     }
 
     function processProposal(uint256 proposalIndex) public nonReentrant onlyAdmin {
-        require(proposalIndex < proposalQueue.length, "proposal does not exist");
-        Proposal storage proposal = proposals[proposalQueue[proposalIndex]];
+        _validateProposalForProcessing(proposalIndex);
 
-        require(getCurrentPeriod() >= proposal.startingPeriod.add(votingPeriodLength).add(gracePeriodLength), "proposal is not ready to be processed");
-        require(proposal.flags[1] == false, "proposal has already been processed");
-        require(proposalIndex == 0 || proposals[proposalQueue[proposalIndex.sub(1)]].flags[1], "previous proposal must be processed");
+        uint256 proposalId = proposalQueue[proposalIndex];
+        Proposal storage proposal = proposals[proposalId];
 
-        proposal.flags[1] = true;
-        totalSharesRequested = totalSharesRequested.sub(proposal.sharesRequested);
+        require(!proposal.flags[4] && !proposal.flags[5], "must be a standard proposal");
 
-        bool didPass = proposal.yesVotes > proposal.noVotes;
+        proposal.flags[1] = true; // processed
 
-        // If emergencyExitWait has passed from when this proposal *should* have been able to be processed, skip all effects
-        bool emergencyProcessing = false;
-        if (getCurrentPeriod() >= proposal.startingPeriod.add(votingPeriodLength).add(gracePeriodLength).add(emergencyExitWait)) {
-            emergencyProcessing = true;
+        bool didPass = _didPass(proposalIndex);
+
+        // Make the proposal fail if the new total number of shares and loot exceeds the limit
+        if (totalShares.add(proposal.sharesRequested) > MAX_NUMBER_OF_SHARES) {
             didPass = false;
         }
+
+        // Make the proposal fail if it is requesting more tokens as payment than the available guild bank balance
+        if (proposal.paymentRequested > userTokenBalances[GUILD][proposal.paymentToken]) {
+            didPass = false;
+        }
+
+        // Make the proposal fail if it would result in too many tokens with non-zero balance in guild bank
+        if (proposal.tributeOffered > 0 && userTokenBalances[GUILD][proposal.tributeToken] == 0 && totalGuildBankTokens >= MAX_TOKEN_GUILDBANK_COUNT) {
+           didPass = false;
+        }
+
+        // PROPOSAL PASSED
+        if (didPass) {
+            proposal.flags[2] = true; // didPass
+
+            // if the applicant is already a member, add to their existing shares & loot
+            if (members[proposal.applicant].exists) {
+                members[proposal.applicant].shares = members[proposal.applicant].shares.add(proposal.sharesRequested);
+
+            // the applicant is a new member, create a new record for them
+            } else {
+                // if the applicant address is already taken by a member's delegateKey, reset it to their member address
+                if (members[memberAddressByDelegateKey[proposal.applicant]].exists) {
+                    address memberToOverride = memberAddressByDelegateKey[proposal.applicant];
+                    memberAddressByDelegateKey[memberToOverride] = memberToOverride;
+                    members[memberToOverride].delegateKey = memberToOverride;
+                }
+
+                // use applicant address as delegateKey by default
+                members[proposal.applicant] = Member(proposal.applicant, proposal.sharesRequested, proposal.lootRequested, true, 0, 0);
+                memberAddressByDelegateKey[proposal.applicant] = proposal.applicant;
+            }
+
+            // mint new shares & loot
+            totalShares = totalShares.add(proposal.sharesRequested);
+
+            // if the proposal tribute is the first tokens of its kind to make it into the guild bank, increment total guild bank tokens
+            if (userTokenBalances[GUILD][proposal.tributeToken] == 0 && proposal.tributeOffered > 0) {
+                totalGuildBankTokens += 1;
+            }
+
+            unsafeInternalTransfer(ESCROW, GUILD, proposal.tributeToken, proposal.tributeOffered);
+            unsafeInternalTransfer(GUILD, proposal.applicant, proposal.paymentToken, proposal.paymentRequested);
+
+            // if the proposal spends 100% of guild bank balance for a token, decrement total guild bank tokens
+            if (userTokenBalances[GUILD][proposal.paymentToken] == 0 && proposal.paymentRequested > 0) {
+                totalGuildBankTokens -= 1;
+            }
+
+        // PROPOSAL FAILED
+        } else {
+            // return all tokens to the proposer (not the applicant, because funds come from proposer)
+            unsafeInternalTransfer(ESCROW, proposal.proposer, proposal.tributeToken, proposal.tributeOffered);
+        }
+
+        _returnDeposit(proposal.proposer);
+
+        emit ProcessProposal(proposalIndex, proposalId, didPass);
+    }
+
+function processGuildKickProposal(uint256 proposalIndex) public nonReentrant {
+        _validateProposalForProcessing(proposalIndex);
+
+        uint256 proposalId = proposalQueue[proposalIndex];
+        Proposal storage proposal = proposals[proposalId];
+
+        require(proposal.flags[4], "must be a guild kick proposal");
+
+        proposal.flags[1] = true; // processed
+
+        bool didPass = _didPass(proposalIndex);
+
+        if (didPass) {
+            proposal.flags[2] = true; // didPass
+            Member storage member = members[proposal.applicant];
+            member.jailed = proposalIndex;
+            //rage quit members shares and return pro-rata guild funds to them.
+            _ragequit(proposal.applicant, members[proposal.applicant].shares, approvedTokens);
+
+            member.shares = 0; // revoke all shares
+        }
+
+        proposedToKick[proposal.applicant] = false;
+
+        _returnDeposit(proposal.sponsor);
+
+        emit ProcessGuildKickProposal(proposalIndex, proposalId, didPass);
+    }
+
+    function _didPass(uint256 proposalIndex) internal returns (bool didPass) {
+        Proposal memory proposal = proposals[proposalQueue[proposalIndex]];
+
+        didPass = proposal.yesVotes > proposal.noVotes;
 
         // Make the proposal fail if the dilutionBound is exceeded
         if (totalShares.mul(dilutionBound) < proposal.maxTotalSharesAtYesVote) {
             didPass = false;
         }
 
-        // Make sure there is enough tokens for payments, or auto-fail
-        if (proposal.paymentRequested >= proposal.paymentToken.balanceOf(address(guildBank))) {
+        // Make the proposal fail if the applicant is jailed
+        // - for standard proposals, we don't want the applicant to get any shares/loot/payment
+        // - for guild kick proposals, we should never be able to propose to kick a jailed member (or have two kick proposals active), so it doesn't matter
+        if (members[proposal.applicant].jailed != 0) {
             didPass = false;
         }
 
-         if (members[proposal.applicant].jailed != 0) {
-            didPass = false;
-        }
-
-        // PROPOSAL PASSED
-        if (didPass) {
-
-            proposal.flags[2] = true; // didPass = true
-
-            // guild kick proposal passed, ragequit 100% of the member's shares
-             if (proposal.flags[4]) {
-                 Member storage member = members[proposal.applicant];
-                 member.jailed = proposalIndex;
-                _ragequit(proposal.applicant, members[proposal.applicant].shares, approvedTokens);
-
-            // standard proposal passed, collect tribute, send payment, mint shares
-            } else {
-                // if the applicant is already a member, add to their existing shares
-                if (members[proposal.applicant].exists) {
-                    members[proposal.applicant].shares = members[proposal.applicant].shares.add(proposal.sharesRequested);
-
-                // the applicant is a new member, create a new record for them
-                } else {
-                    // if the applicant address is already taken by a member's delegateKey, reset it to their member address
-                    if (members[memberAddressByDelegateKey[proposal.applicant]].exists) {
-                        address memberToOverride = memberAddressByDelegateKey[proposal.applicant];
-                        memberAddressByDelegateKey[memberToOverride] = memberToOverride;
-                        members[memberToOverride].delegateKey = memberToOverride;
-                    }
-
-                    // use applicant address as delegateKey by default
-                    members[proposal.applicant] = Member(proposal.applicant, proposal.sharesRequested, 0, 0, true, canQuit);
-                    memberAddressByDelegateKey[proposal.applicant] = proposal.applicant;
-                }
-
-                // mint new shares, if requested
-                totalShares = totalShares.add(proposal.sharesRequested);
-
-                // transfer tribute tokens to guild bank, if provided
-                require(
-                    proposal.tributeToken.transfer(address(guildBank), proposal.tributeOffered),
-                    "token transfer to guild bank failed"
-                );
-
-                totalContributed = totalContributed.add(proposal.tributeOffered);
-
-                // transfer payment tokens to applicant for grants
-                require(
-                    guildBank.withdrawToken(proposal.paymentToken, proposal.applicant, proposal.paymentRequested),
-                    "token payment to applicant failed"
-                );
-            }
-
-        // PROPOSAL FAILED
-        } else {
-            // Don't return applicant tokens if we are in emergency processing - likely the tokens are broken
-                // return all tokens to the proposer
-                require(
-                    proposal.tributeToken.transfer(proposal.proposer, proposal.tributeOffered),
-                    "failing vote token transfer failed"
-                );
-        }
-
-        // if guild kick proposal, remove member from list of members proposed to be kicked
-        if (proposal.flags[4]) {
-            proposedToKick[proposal.applicant] = false;
-        }
-
-        // send msg.sender the processingReward
-        require(
-            depositToken.transfer(msg.sender, processingReward),
-            "failed to send processing reward to msg.sender"
-        );
-
-        // return deposit to sponsor (subtract processing reward)
-        require(
-            depositToken.transfer(proposal.sponsor, proposalDeposit.sub(processingReward)),
-            "failed to return proposal deposit to sponsor"
-        );
-
-        emit ProcessProposal(proposalIndex, proposal.applicant, proposal.proposer, proposal.tributeOffered, proposal.sharesRequested, didPass);
+        return didPass;
     }
+
+    function _validateProposalForProcessing(uint256 proposalIndex) internal view {
+        require(proposalIndex < proposalQueue.length, "proposal does not exist");
+        Proposal memory proposal = proposals[proposalQueue[proposalIndex]];
+
+        require(getCurrentPeriod() >= proposal.startingPeriod.add(votingPeriodLength).add(gracePeriodLength), "proposal is not ready to be processed");
+        require(proposal.flags[1] == false, "proposal has already been processed");
+        require(proposalIndex == 0 || proposals[proposalQueue[proposalIndex.sub(1)]].flags[1], "previous proposal must be processed");
+    }
+
+    function _returnDeposit(address sponsor) internal {
+        unsafeInternalTransfer(ESCROW, msg.sender, depositToken, processingReward);
+        unsafeInternalTransfer(ESCROW, sponsor, depositToken, proposalDeposit.sub(processingReward));
+    }
+
 
     function ragequit(uint256 sharesToBurn) public nonReentrant onlyMember {
-        _ragequit(msg.sender, sharesToBurn, approvedTokens);
+        _ragequit(msg.sender, sharesToBurn);
     }
 
 
-    function _ragequit(address memberAddress, uint256 sharesToBurn, IERC20[] memory _approvedTokens) internal {
+    function _ragequit(address memberAddress, uint256 sharesToBurn) internal {
+
         uint256 initialTotalShares = totalShares;
 
         Member storage member = members[memberAddress];
 
         require(member.canQuit  == true, "member must get admin approval to quit");
-
         require(member.shares >= sharesToBurn, "insufficient shares");
 
         require(canRagequit(member.highestIndexYesVote), "cannot ragequit until highest index proposal member voted YES on is processed");
@@ -555,31 +527,53 @@ contract PeepsMoloch is Context, ReentrancyGuard {
         member.shares = member.shares.sub(sharesToBurn);
         totalShares = totalShares.sub(sharesToBurn);
 
-        // instruct guildBank to transfer fair share of tokens to the ragequitter
-        require(
-            guildBank.withdraw(memberAddress, sharesToBurn, initialTotalShares, _approvedTokens),
-            "withdrawal of tokens from guildBank failed"
-        );
-
-          address[] memory tokenList = new address[](_approvedTokens.length);
-             for (uint256 i=0; i < _approvedTokens.length; i++) {
-             tokenList[i] = address(approvedTokens[i]);
+        // instruct GUILD to transfer fair share of tokens to the ragequitter
+        for (uint256 i = 0; i < approvedTokens.length; i++) {
+            uint256 amountToRagequit = fairShare(userTokenBalances[GUILD][approvedTokens[i]], sharesToBurn, initialTotalShares);
+            if (amountToRagequit > 0) { // gas optimization to allow a higher maximum token limit
+                // deliberately not using safemath here to keep overflows from preventing the function execution (which would break ragekicks)
+                // if a token overflows, it is because the supply was artificially inflated to oblivion, so we probably don't care about it anyways
+                userTokenBalances[GUILD][approvedTokens[i]] -= amountToRagequit;
+                userTokenBalances[memberAddress][approvedTokens[i]] += amountToRagequit;
+            }
         }
-        emit Ragequit(msg.sender, sharesToBurn, tokenList);
+
+        emit Ragequit(msg.sender, sharesToBurn);
     }
 
-    function cancelProposal(uint256 proposalId) public {
+        function withdrawBalance(address token, uint256 amount) public nonReentrant {
+        _withdrawBalance(token, amount);
+    }
+
+    function withdrawBalances(address[] memory tokens, uint256[] memory amounts, bool max) public nonReentrant {
+        require(tokens.length == amounts.length, "tokens and amounts arrays must be matching lengths");
+
+        for (uint256 i=0; i < tokens.length; i++) {
+            uint256 withdrawAmount = amounts[i];
+            if (max) { // withdraw the maximum balance
+                withdrawAmount = userTokenBalances[msg.sender][tokens[i]];
+            }
+
+            _withdrawBalance(tokens[i], withdrawAmount);
+        }
+    }
+
+    function _withdrawBalance(address token, uint256 amount) internal {
+        require(userTokenBalances[msg.sender][token] >= amount, "insufficient balance");
+        unsafeSubtractFromBalance(msg.sender, token, amount);
+        require(IERC20(token).transfer(msg.sender, amount), "transfer failed");
+        emit Withdraw(msg.sender, token, amount);
+    }
+
+    function cancelProposal(uint256 proposalId) public nonReentrant {
         Proposal storage proposal = proposals[proposalId];
         require(!proposal.flags[0], "proposal has already been sponsored");
-        require(msg.sender == proposal.proposer, "only the proposer can cancel");
+        require(!proposal.flags[3], "proposal has already been cancelled");
+        require(msg.sender == proposal.proposer, "solely the proposer can cancel");
 
         proposal.flags[3] = true; // cancelled
 
-        require(
-            proposal.tributeToken.transfer(proposal.proposer, proposal.tributeOffered),
-            "failed to return tribute to proposer"
-        );
-
+        unsafeInternalTransfer(ESCROW, proposal.proposer, proposal.tributeToken, proposal.tributeOffered);
         emit CancelProposal(proposalId, msg.sender);
     }
 
@@ -632,7 +626,7 @@ contract PeepsMoloch is Context, ReentrancyGuard {
             //increase total shares
             totalShares = totalShares.add(shares);
 
-            //transfer donation to GuildBank
+            //transfer donation to GUILD
             require(depositToken.transferFrom(_newMemberAddress, address(guildBank), _tributeAmount), "tribute token transfer failed");
 
             //emit event
@@ -675,6 +669,8 @@ contract PeepsMoloch is Context, ReentrancyGuard {
         function addWhitelistedToken(address _tokenToWhitelist) public onlyAdmin returns(bool) {
         require(_tokenToWhitelist != address(0), "must provide token address");
         require(!tokenWhitelist[_tokenToWhitelist], "cannot already have whitelisted the token");
+        require(totalGuildBankTokens < MAX_TOKEN_GUILDBANK_COUNT, 'cannot add new tokens - guildbank is full');
+
 
         tokenWhitelist[address(_tokenToWhitelist)] = true;
         approvedTokens.push(IERC20(_tokenToWhitelist));
@@ -717,5 +713,37 @@ contract PeepsMoloch is Context, ReentrancyGuard {
 
     function isAdmin(address account) public view returns (bool) {
         return _admins.has(account);
+    }
+
+        /***************
+    HELPER FUNCTIONS
+    ***************/
+    function unsafeAddToBalance(address user, address token, uint256 amount) internal {
+        userTokenBalances[user][token] += amount;
+        userTokenBalances[TOTAL][token] += amount;
+    }
+
+    function unsafeSubtractFromBalance(address user, address token, uint256 amount) internal {
+        userTokenBalances[user][token] -= amount;
+        userTokenBalances[TOTAL][token] -= amount;
+    }
+
+    function unsafeInternalTransfer(address from, address to, address token, uint256 amount) internal {
+        unsafeSubtractFromBalance(from, token, amount);
+        unsafeAddToBalance(to, token, amount);
+    }
+
+    function fairShare(uint256 balance, uint256 shares, uint256 totalShares) internal pure returns (uint256) {
+        require(totalShares != 0);
+
+        if (balance == 0) { return 0; }
+
+        uint256 prod = balance * shares;
+
+        if (prod / balance == shares) { // no overflow in multiplication above?
+            return prod / totalShares;
+        }
+
+        return (balance / totalShares) * shares;
     }
 }
