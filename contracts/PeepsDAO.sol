@@ -1,10 +1,63 @@
-pragma solidity ^0.5.14;
+pragma solidity ^0.6.1;
 
 import "https://github.com/OpenZeppelin/openzeppelin-solidity/contracts/math/SafeMath.sol";
 import "https://github.com/OpenZeppelin/openzeppelin-solidity/contracts/token/ERC20/IERC20.sol";
 import "https://github.com/OpenZeppelin/openzeppelin-solidity/contracts/ownership/Ownable.sol";
 import "https://github.com/OpenZeppelin/openzeppelin-solidity/contracts/access/Roles.sol";
 import "https://github.com/OpenZeppelin/openzeppelin-solidity/contracts/utils/ReentrancyGuard.sol";
+
+contract PeepsMolochFactory is ReentrancyGuard {
+    using SafeMath for uint256;
+
+    //constants and mappings
+    PeepsMoloch private P;
+    address[] public PeepsMolochs;
+
+
+    //events
+    event NewPeepsMoloch(address indexed _summoner, address indexed P, address indexed _peepsWallet, uint _minDonation, bool _canQuit);
+
+
+   // deploy a new contract
+   function createPeepsMoloch(
+     address _summoner,
+     address _peepsWallet, //set wallet address on front-end
+     address[] memory _approvedTokens,
+     uint256 _periodDuration,
+     uint256 _votingPeriodLength,
+     uint256 _gracePeriodLength,
+     uint256 _emergencyExitWait,
+     uint256 _proposalDeposit,
+     uint256 _dilutionBound,
+     uint256 _processingReward,
+     uint256 _minDonation,
+     uint256 _adminFee, //denominator for the admin fee, default to 32 which gets to 3.125%
+     bool _canQuit
+       )
+    public {
+     P = new PeepsMoloch(
+      _summoner,
+      _peepsWallet,
+      _approvedTokens,
+      _periodDuration,
+      _votingPeriodLength,
+      _gracePeriodLength,
+      _emergencyExitWait,
+      _proposalDeposit,
+      _dilutionBound,
+      _processingReward,
+      _minDonation,
+      _adminFee,
+      _canQuit);
+
+    PeepsMolochs.push(address(P));
+    emit NewPeepsMoloch(_summoner, address(P), _peepsWallet, _minDonation, _canQuit);
+  }
+
+    function getPeepsMolochCount() public view returns (uint256 PeepsMolochCount) {
+        return PeepsMolochs.length;
+    }
+}
 
 
 // *******************
@@ -27,10 +80,11 @@ contract PeepsMoloch is Context, ReentrancyGuard {
     uint256 public processingReward; // default = 0.01 ETH - amount to give to whomever processes a proposal
     uint256 public summoningTime; // needed to determine the current period
     uint256 public minDonation; // min donation to join
+    uint256 public adminFee; // admin fee demoninator, so default is 32 to get to a 3.125% fee when divided into 100
     bool public canQuit;
 
     address public depositToken; // reference to the deposit token
-    //GuildBank public guildBank; // guild bank contract reference
+    address public peepsWallet; // reference to wallet for collecting fees
 
     // HARD-CODED LIMITS
     // These numbers are quite arbitrary; they are small enough to avoid overflows when doing calculations
@@ -39,8 +93,8 @@ contract PeepsMoloch is Context, ReentrancyGuard {
     uint256 constant MAX_GRACE_PERIOD_LENGTH = 10**18; // maximum length of grace period
     uint256 constant MAX_DILUTION_BOUND = 10**18; // maximum dilution bound
     uint256 constant MAX_NUMBER_OF_SHARES = 10**18; // maximum number of shares that can be minted
-    uint256 constant MAX_TOKEN_WHITELIST_COUNT = 25; // maximum number of whitelisted tokens
-    uint256 constant MAX_TOKEN_GUILDBANK_COUNT = 20; // maximum number of tokens with non-zero balance in guildbank
+    uint256 constant MAX_TOKEN_WHITELIST_COUNT = 50; // maximum number of whitelisted tokens
+    uint256 constant MAX_TOKEN_GUILDBANK_COUNT = 25; // maximum number of tokens with non-zero balance in guildbank
 
     // ***************
     // EVENTS
@@ -156,6 +210,7 @@ contract PeepsMoloch is Context, ReentrancyGuard {
     // *********
     constructor(
         address summoner,
+        address _peepsWallet,
         address[] memory _approvedTokens,
         uint256 _periodDuration,
         uint256 _votingPeriodLength,
@@ -165,6 +220,7 @@ contract PeepsMoloch is Context, ReentrancyGuard {
         uint256 _dilutionBound,
         uint256 _processingReward,
         uint256 _minDonation,
+        uint256 _adminFee,
         bool _canQuit
     ) public {
         require(summoner != address(0), "summoner cannot be 0");
@@ -177,6 +233,7 @@ contract PeepsMoloch is Context, ReentrancyGuard {
         require(_dilutionBound <= MAX_DILUTION_BOUND, "dilution bound exceeds limit");
         require(_approvedTokens.length > 0, "need at least one approved token");
         require(_proposalDeposit >= _processingReward, "proposal deposit cannot be smaller than processing reward");
+
 
         //placed here to avoid a stack to deep error
         emit SummonComplete(summoner, _approvedTokens, now, _periodDuration, _votingPeriodLength, _gracePeriodLength, _proposalDeposit,  _processingReward);
@@ -195,6 +252,7 @@ contract PeepsMoloch is Context, ReentrancyGuard {
         totalGuildBankTokens += 1;
 
         //set default parameters
+        peepsWallet = _peepsWallet;
         periodDuration = _periodDuration;
         votingPeriodLength = _votingPeriodLength;
         gracePeriodLength = _gracePeriodLength;
@@ -203,6 +261,7 @@ contract PeepsMoloch is Context, ReentrancyGuard {
         dilutionBound = _dilutionBound;
         processingReward = _processingReward;
         minDonation = _minDonation;
+        adminFee = _adminFee;
         canQuit = _canQuit;
 
         summoningTime = now;
@@ -609,11 +668,18 @@ function processGuildKickProposal(uint256 proposalIndex) public nonReentrant {
         function  addMember (address _newMemberAddress, uint256 _tributeAmount) onlyAdmin public returns(bool) {
 
             require(_newMemberAddress != address(0), "new member applicant cannot be 0");
-
-            //@dev rounds down to nearest number of shares based on tribute offered and minimum donation
             require(_tributeAmount >= minDonation, "applicant cannot give less than min donation");
 
-               uint shares = (_tributeAmount) / (minDonation);
+            //rounds down to nearest number of shares based on tribute offered and minimum donation
+             uint256 shares = (_tributeAmount) / (minDonation);
+
+            //peeps fee calculations and pay fee to to peepsWallet address
+             uint256 decimalFactor = 10**uint256(18);
+             uint256 peepsFee = (_tributeAmount.mul(decimalFactor)).div((adminFee*decimalFactor));
+             uint256 tributeAmount = _tributeAmount.sub(peepsFee);
+             require(IERC20(depositToken).transferFrom(msg.sender, address(peepsWallet), peepsFee), "fee transfer failed");
+
+
 
             if (members[_newMemberAddress].exists) {
                 members[_newMemberAddress].shares = members[_newMemberAddress].shares.add(shares);
@@ -637,15 +703,15 @@ function processGuildKickProposal(uint256 proposalIndex) public nonReentrant {
             totalShares = totalShares.add(shares);
 
             //transfer donation to GUILD
-            require(IERC20(depositToken).transferFrom(msg.sender, address(this), _tributeAmount), "donation transfer failed");
+            require(IERC20(depositToken).transferFrom(msg.sender, address(this), tributeAmount), "donation transfer failed");
             unsafeAddToBalance(GUILD, depositToken, _tributeAmount);
 
             //emit event
             emit MemberAdded(_newMemberAddress, _tributeAmount, shares);
         }
 
-    //@Dev - add admin functions, summoner is set as the original admin
-    //TODO - consider adding a renounce admin function
+    //Add admin functions, summoner is set as the original admin
+    //No renounce admin function, because it's necessary to have at least one admin at all times for DAO to function.
 
     function addAdmin(address account) public onlyAdmin {
         _addAdmin(account);
