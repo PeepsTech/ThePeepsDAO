@@ -114,6 +114,7 @@ contract PeepsMoloch is Context, ReentrancyGuard {
     event CanQuit(address indexed member);
     event TokenAdded (address indexed _tokenToWhitelist);
     event Withdraw(address indexed memberAddress, address token, uint256 amount);
+    event feeWithdraw(address indexed peepsWallet, address token, uint256 amount);
 
     // *******************
     // INTERNAL ACCOUNTING
@@ -662,9 +663,6 @@ function processGuildKickProposal(uint256 proposalIndex) public nonReentrant {
     // ADMIN FUNCTIONS
     // ****************
 
-    //@dev function to add a member without going through submit proposal process
-    //TODO: automatically calculate number of shares issued based on minimum tribute where 1 share = min. donation amt.
-
         function  addMember (address _newMemberAddress, uint256 _tributeAmount) onlyAdmin public returns(bool) {
 
             require(_newMemberAddress != address(0), "new member applicant cannot be 0");
@@ -676,9 +674,7 @@ function processGuildKickProposal(uint256 proposalIndex) public nonReentrant {
             //peeps fee calculations and pay fee to to peepsWallet address
              uint256 decimalFactor = 10**uint256(18);
              uint256 peepsFee = (_tributeAmount.mul(decimalFactor)).div((adminFee*decimalFactor));
-             uint256 tributeAmount = _tributeAmount.sub(peepsFee);
-             require(IERC20(depositToken).transferFrom(msg.sender, address(peepsWallet), peepsFee), "fee transfer failed");
-
+            //uint256 tributeAmount = _tributeAmount.sub(peepsFee);
 
 
             if (members[_newMemberAddress].exists) {
@@ -702,13 +698,30 @@ function processGuildKickProposal(uint256 proposalIndex) public nonReentrant {
             //increase total shares
             totalShares = totalShares.add(shares);
 
-            //transfer donation to GUILD
-            require(IERC20(depositToken).transferFrom(msg.sender, address(this), tributeAmount), "donation transfer failed");
-            unsafeAddToBalance(GUILD, depositToken, _tributeAmount);
+            //transfer donation to GUILD and then from GUILD to Peeps
+            require(IERC20(depositToken).transferFrom(_newMemberAddress, address(this), _tributeAmount), "donation transfer failed");
 
-            //emit event
+            //update DAO accounting
+            unsafeAddToBalance(GUILD, depositToken, _tributeAmount);
+            userTokenBalances[GUILD][depositToken] -= peepsFee;
+            unsafeInternalTransfer(GUILD, peepsWallet, depositToken, peepsFee);
+            userTokenBalances[peepsWallet][depositToken] += peepsFee;
+
+            //withdraw platform fees on donation
+            _feeWithdraw(depositToken, peepsFee);
+
+            //emit member added event
             emit MemberAdded(_newMemberAddress, _tributeAmount, shares);
         }
+
+    //sends peepsFee to peepsWallet after donation is made
+    //@dev prevents peepsWallet from manually having to call withdraw on regular intervals
+    function _feeWithdraw(address token, uint256 amount) internal {
+        require(userTokenBalances[peepsWallet][token] >= amount, "insufficient balance");
+        unsafeSubtractFromBalance(peepsWallet, token, amount);
+        require(IERC20(token).transfer(peepsWallet, amount), "transfer failed");
+        emit feeWithdraw(peepsWallet, token, amount);
+    }
 
     //Add admin functions, summoner is set as the original admin
     //No renounce admin function, because it's necessary to have at least one admin at all times for DAO to function.
