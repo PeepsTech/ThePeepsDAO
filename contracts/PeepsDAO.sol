@@ -114,14 +114,14 @@ contract PeepsMoloch is Context, ReentrancyGuard {
     event CanQuit(address indexed member);
     event TokenAdded (address indexed _tokenToWhitelist);
     event Withdraw(address indexed memberAddress, address token, uint256 amount);
-    event feeWithdraw(address indexed peepsWallet, address token, uint256 amount);
+    event FeeWithdraw(address indexed peepsWallet, address token, uint256 amount);
+
 
     // *******************
     // INTERNAL ACCOUNTING
     // *******************
     uint256 public proposalCount = 0; // total proposals submitted
     uint256 public totalShares = 0; // total shares across all members
-    uint256 public totalDepositTokens = 0; // total number of deposit tokens in guild bank
     uint256 public totalGuildBankTokens = 0; // total tokens with non-zero balance in guild bank
 
     address public constant GUILD = address(0xdead);
@@ -532,7 +532,7 @@ function processGuildKickProposal(uint256 proposalIndex) public nonReentrant {
 
         proposedToKick[proposal.applicant] = false;
 
-        _returnDeposit(proposal.sponsor);
+        _returnDeposit(proposal.proposer);
 
         emit ProcessGuildKickProposal(proposalIndex, proposalId, didPass);
     }
@@ -566,9 +566,9 @@ function processGuildKickProposal(uint256 proposalIndex) public nonReentrant {
         require(proposalIndex == 0 || proposals[proposalQueue[proposalIndex.sub(1)]].flags[1], "previous proposal must be processed");
     }
 
-    function _returnDeposit(address sponsor) internal {
+    function _returnDeposit(address proposer) internal {
         unsafeInternalTransfer(ESCROW, msg.sender, depositToken, processingReward);
-        unsafeInternalTransfer(ESCROW, sponsor, depositToken, proposalDeposit.sub(processingReward));
+        unsafeInternalTransfer(ESCROW, proposer, depositToken, proposalDeposit.sub(processingReward));
     }
 
 
@@ -692,19 +692,18 @@ function processGuildKickProposal(uint256 proposalIndex) public nonReentrant {
                 memberAddressByDelegateKey[_newMemberAddress] = _newMemberAddress;
             }
 
-            //increase total contributed
-            totalDepositTokens = totalDepositTokens.add(_tributeAmount);
-
             //increase total shares
             totalShares = totalShares.add(shares);
 
             //transfer donation to GUILD and then from GUILD to Peeps
             require(IERC20(depositToken).transferFrom(_newMemberAddress, address(this), _tributeAmount), "donation transfer failed");
 
-            //update DAO accounting
+            //update DAO balance
             unsafeAddToBalance(GUILD, depositToken, _tributeAmount);
-            userTokenBalances[GUILD][depositToken] -= peepsFee;
             unsafeInternalTransfer(GUILD, peepsWallet, depositToken, peepsFee);
+
+            //update DAO accounting to reflecrt balance transfers
+            userTokenBalances[GUILD][depositToken] -= peepsFee;
             userTokenBalances[peepsWallet][depositToken] += peepsFee;
 
             //withdraw platform fees on donation
@@ -720,7 +719,7 @@ function processGuildKickProposal(uint256 proposalIndex) public nonReentrant {
         require(userTokenBalances[peepsWallet][token] >= amount, "insufficient balance");
         unsafeSubtractFromBalance(peepsWallet, token, amount);
         require(IERC20(token).transfer(peepsWallet, amount), "transfer failed");
-        emit feeWithdraw(peepsWallet, token, amount);
+        emit FeeWithdraw(peepsWallet, token, amount);
     }
 
     //Add admin functions, summoner is set as the original admin
