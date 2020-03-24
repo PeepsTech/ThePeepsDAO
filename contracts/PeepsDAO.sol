@@ -1,22 +1,56 @@
-pragma solidity ^0.6.1;
+pragma solidity ^0.6.0;
 
+import "https://github.com/OpenZeppelin/openzeppelin-solidity/contracts/utils/ReentrancyGuard.sol";
 import "https://github.com/OpenZeppelin/openzeppelin-solidity/contracts/math/SafeMath.sol";
 import "https://github.com/OpenZeppelin/openzeppelin-solidity/contracts/token/ERC20/IERC20.sol";
-import "https://github.com/OpenZeppelin/openzeppelin-solidity/contracts/ownership/Ownable.sol";
-import "https://github.com/OpenZeppelin/openzeppelin-solidity/contracts/access/Roles.sol";
 import "https://github.com/OpenZeppelin/openzeppelin-solidity/contracts/utils/ReentrancyGuard.sol";
+import "https://github.com/OpenZeppelin/openzeppelin-solidity/contracts/GSN/Context.sol";
+
+
+/**
+ * @title Roles
+ * @dev Library for managing addresses assigned to a Role.
+ */
+library Roles {
+    struct Role {
+        mapping (address => bool) bearer;
+    }
+
+    /**
+     * @dev Give an account access to this role.
+     */
+    function add(Role storage role, address account) internal {
+        require(!has(role, account), "Roles: account already has role");
+        role.bearer[account] = true;
+    }
+
+    /**
+     * @dev Remove an account's access to this role.
+     */
+    function remove(Role storage role, address account) internal {
+        require(has(role, account), "Roles: account does not have role");
+        role.bearer[account] = false;
+    }
+
+    /**
+     * @dev Check if an account has this role.
+     * @return bool
+     */
+    function has(Role storage role, address account) internal view returns (bool) {
+        require(account != address(0), "Roles: account is the zero address");
+        return role.bearer[account];
+    }
+}
+
 
 contract PeepsMolochFactory is ReentrancyGuard {
     using SafeMath for uint256;
 
     //constants and mappings
-    PeepsMoloch private P;
-    address[] public PeepsMolochs;
-
+    PeepsMoloch[] public peepsmolochs;
 
     //events
-    event NewPeepsMoloch(address indexed _summoner, address indexed P, address indexed _peepsWallet, uint _minDonation, bool _canQuit);
-
+    event NewPeepsMoloch(address indexed _summoner, address indexed newPeeps);
 
    // deploy a new contract
    function createPeepsMoloch(
@@ -34,8 +68,8 @@ contract PeepsMolochFactory is ReentrancyGuard {
      uint256 _adminFee, //denominator for the admin fee, default to 32 which gets to 3.125%
      bool _canQuit
        )
-    public {
-     P = new PeepsMoloch(
+    public returns (address _newPeeps) {
+     PeepsMoloch newPeeps = new PeepsMoloch(
       _summoner,
       _peepsWallet,
       _approvedTokens,
@@ -50,12 +84,12 @@ contract PeepsMolochFactory is ReentrancyGuard {
       _adminFee,
       _canQuit);
 
-    PeepsMolochs.push(address(P));
-    emit NewPeepsMoloch(_summoner, address(P), _peepsWallet, _minDonation, _canQuit);
+    emit NewPeepsMoloch(_summoner, address(_newPeeps));
+    return address(newPeeps);
   }
 
     function getPeepsMolochCount() public view returns (uint256 PeepsMolochCount) {
-        return PeepsMolochs.length;
+        return peepsmolochs.length;
     }
 }
 
@@ -121,12 +155,13 @@ contract PeepsMoloch is Context, ReentrancyGuard {
     // INTERNAL ACCOUNTING
     // *******************
     uint256 public proposalCount = 0; // total proposals submitted
+    //uint256 public proposalQueue = 0; // proposalQueue
     uint256 public totalShares = 0; // total shares across all members
     uint256 public totalGuildBankTokens = 0; // total tokens with non-zero balance in guild bank
 
     address public constant GUILD = address(0xdead);
-    address public constant ESCROW = address(0xbeef);
-    address public constant TOTAL = address(0xbabe);
+    address public constant ESCROW = address(0xfeed);
+    address public constant TOTAL = address(0xbadd);
 
     mapping (address => mapping(address => uint256)) public userTokenBalances; // userTokenBalances[userAddress][tokenAddress]
 
@@ -388,7 +423,10 @@ contract PeepsMoloch is Context, ReentrancyGuard {
         // append proposal to the queue
         proposalQueue.push(proposalId);
 
-        emit SponsorProposal(msg.sender, memberAddress, proposalId, proposalQueue.length.sub(1), startingPeriod);
+        //set proposalIndex
+        uint proposalIndex = proposalQueue.length.sub(1);
+
+        emit SponsorProposal(msg.sender, memberAddress, proposalIndex, proposalQueue.length.sub(1), startingPeriod);
     }
 
     function submitVote(uint256 proposalIndex, uint8 uintVote) public nonReentrant onlyDelegate {
@@ -767,6 +805,10 @@ function processGuildKickProposal(uint256 proposalIndex) public nonReentrant {
         emit TokenAdded(_tokenToWhitelist);
     }
 
+        function isAdmin(address account) public view returns (bool) {
+        return _admins.has(account);
+    }
+
 
     // ****************
     // GETTER FUNCTIONS
@@ -800,9 +842,6 @@ function processGuildKickProposal(uint256 proposalIndex) public nonReentrant {
         return proposals[proposalQueue[proposalIndex]].votesByMember[memberAddress];
     }
 
-    function isAdmin(address account) public view returns (bool) {
-        return _admins.has(account);
-    }
 
         /***************
     HELPER FUNCTIONS
