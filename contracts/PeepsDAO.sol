@@ -7,6 +7,7 @@ import "https://github.com/OpenZeppelin/openzeppelin-solidity/contracts/utils/Re
 import "https://github.com/OpenZeppelin/openzeppelin-solidity/contracts/GSN/Context.sol";
 
 
+
 /**
  * @title Roles
  * @dev Library for managing addresses assigned to a Role.
@@ -47,7 +48,7 @@ contract PeepsMolochFactory is ReentrancyGuard {
     using SafeMath for uint256;
 
     //constants and mappings
-    PeepsMoloch[] public peepsmolochs;
+    address[] public PeepsMolochs;
 
     //events
     event NewPeepsMoloch(address indexed _summoner, address indexed newPeeps);
@@ -68,7 +69,7 @@ contract PeepsMolochFactory is ReentrancyGuard {
      uint256 _adminFee, //denominator for the admin fee, default to 32 which gets to 3.125%
      bool _canQuit
        )
-    public returns (address _newPeeps) {
+    public returns (address newPeeps) {
      PeepsMoloch newPeeps = new PeepsMoloch(
       _summoner,
       _peepsWallet,
@@ -84,12 +85,13 @@ contract PeepsMolochFactory is ReentrancyGuard {
       _adminFee,
       _canQuit);
 
-    emit NewPeepsMoloch(_summoner, address(_newPeeps));
+    emit NewPeepsMoloch(_summoner, address(newPeeps));
+    PeepsMolochs.push(address(newPeeps));
     return address(newPeeps);
   }
 
     function getPeepsMolochCount() public view returns (uint256 PeepsMolochCount) {
-        return peepsmolochs.length;
+        return PeepsMolochs.length;
     }
 }
 
@@ -135,13 +137,13 @@ contract PeepsMoloch is Context, ReentrancyGuard {
     // ***************
     event SummonComplete(address indexed summoner, address[] tokens, uint256 summoningTime, uint256 periodDuration, uint256 votingPeriodLength, uint256 gracePeriodLength, uint256 proposalDeposit, uint256 processingReward);
     event SubmitProposal(address indexed applicant, uint256 sharesRequested, uint256 tributeOffered, address tributeToken, uint256 paymentRequested, address paymentToken, string details, bool[5] flags, uint256 proposalId, address indexed memberAddress);
-    event SubmitVote(uint256 indexed proposalIndex, address indexed delegateKey, address indexed memberAddress, uint8 uintVote);
+    event SubmitVote(uint256 proposalIndex, uint256 indexed proposalId, address indexed delegateKey, address indexed memberAddress, uint8 uintVote);
     event Ragequit(address indexed memberAddress, uint256 sharesToBurn);
-    event CancelProposal(uint256 indexed proposalIndex, address applicantAddress);
+    event CancelProposal(uint256 indexed proposalId, address applicantAddress);
     event UpdateDelegateKey(address indexed memberAddress, address newDelegateKey);
     event ProcessProposal(uint256 indexed proposalIndex, uint256 indexed proposalId, bool didPass);
     event ProcessGuildKickProposal(uint256 indexed proposalIndex, uint256 indexed proposalId, bool didPass);
-    event SponsorProposal(address indexed delegateKey, address indexed memberAddress, uint256 proposalIndex, uint256 proposalQueueIndex, uint256 startingPeriod);
+    event SponsorProposal(address indexed delegateKey, address indexed memberAddress, uint256 proposalIndex, uint256 proposalQueueIndex, uint256 indexed proposalId, uint256 startingPeriod);
     event MemberAdded(address indexed _newMemberAddress, uint256 _tributeAmount, uint256 _shares);
     event AdminAdded(address indexed account);
     event AdminRemoved(address indexed account);
@@ -215,6 +217,7 @@ contract PeepsMoloch is Context, ReentrancyGuard {
 
     //proposal mapping
     mapping(uint256 => Proposal) public proposals;
+
     //proposal queue for tracking number and order of proposals
     uint256[] public proposalQueue;
 
@@ -426,10 +429,10 @@ contract PeepsMoloch is Context, ReentrancyGuard {
         //set proposalIndex
         uint proposalIndex = proposalQueue.length.sub(1);
 
-        emit SponsorProposal(msg.sender, memberAddress, proposalIndex, proposalQueue.length.sub(1), startingPeriod);
+        emit SponsorProposal(msg.sender, memberAddress, proposalIndex, proposalQueue.length.sub(1), proposalId, startingPeriod);
     }
 
-    function submitVote(uint256 proposalIndex, uint8 uintVote) public nonReentrant onlyDelegate {
+    function submitVote(uint256 proposalId, uint256 proposalIndex, uint8 uintVote) public nonReentrant onlyDelegate {
         address memberAddress = memberAddressByDelegateKey[msg.sender];
         Member storage member = members[memberAddress];
 
@@ -467,7 +470,7 @@ contract PeepsMoloch is Context, ReentrancyGuard {
             proposal.noVotes = proposal.noVotes.add(member.shares);
         }
 
-        emit SubmitVote(proposalIndex, msg.sender, memberAddress, uintVote);
+        emit SubmitVote(proposalIndex, proposalId, msg.sender, memberAddress, uintVote);
     }
 
     function processProposal(uint256 proposalIndex) public nonReentrant onlyAdmin {
