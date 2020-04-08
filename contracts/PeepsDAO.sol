@@ -66,7 +66,7 @@ contract PeepsMolochFactory is ReentrancyGuard {
      uint256 _dilutionBound,
      uint256 _processingReward,
      uint256 _minDonation,
-     uint256 _adminFee, //denominator for the admin fee, default to 32 which gets to 3.125%
+     uint256 _adminFee, //denominator for the admin fee, default to 200 which gets to 1%
      bool _canQuit
        )
     public returns (address newPeeps) {
@@ -129,8 +129,8 @@ contract PeepsMoloch is Context, ReentrancyGuard {
     uint256 constant MAX_GRACE_PERIOD_LENGTH = 10**18; // maximum length of grace period
     uint256 constant MAX_DILUTION_BOUND = 10**18; // maximum dilution bound
     uint256 constant MAX_NUMBER_OF_SHARES = 10**18; // maximum number of shares that can be minted
-    uint256 constant MAX_TOKEN_WHITELIST_COUNT = 50; // maximum number of whitelisted tokens
-    uint256 constant MAX_TOKEN_GUILDBANK_COUNT = 25; // maximum number of tokens with non-zero balance in guildbank
+    uint256 constant MAX_TOKEN_WHITELIST_COUNT = 100; // maximum number of whitelisted tokens
+    uint256 constant MAX_TOKEN_GUILDBANK_COUNT = 100; // maximum number of tokens with non-zero balance in guildbank
 
     // ***************
     // EVENTS
@@ -739,15 +739,13 @@ function processGuildKickProposal(uint256 proposalIndex) public nonReentrant {
             //transfer donation to GUILD and then from GUILD to Peeps
             require(IERC20(depositToken).transferFrom(_newMemberAddress, address(this), _tributeAmount), "donation transfer failed");
 
-            //update DAO balance
+            //update DAO internal balances
             unsafeAddToBalance(GUILD, depositToken, _tributeAmount);
             unsafeInternalTransfer(GUILD, peepsWallet, depositToken, peepsFee);
 
-            //update DAO accounting to reflecrt balance transfers
-            userTokenBalances[GUILD][depositToken] -= peepsFee;
-            userTokenBalances[peepsWallet][depositToken] += peepsFee;
-
             //withdraw platform fees on donation
+            //@DEV: this is one exception to the favored approach of requiring users to pull tokens out.
+            //It would require reconsideration if a DAO uses non-standard, widely adopted ERC-20 tokens.
             _feeWithdraw(depositToken, peepsFee);
 
             //emit member added event
