@@ -578,7 +578,7 @@ function processGuildKickProposal(uint256 proposalIndex) public nonReentrant {
         emit ProcessGuildKickProposal(proposalIndex, proposalId, didPass);
     }
 
-    function _didPass(uint256 proposalIndex) internal returns (bool didPass) {
+    function _didPass(uint256 proposalIndex) internal view returns (bool didPass) {
         Proposal memory proposal = proposals[proposalQueue[proposalIndex]];
 
         didPass = proposal.yesVotes > proposal.noVotes;
@@ -825,6 +825,10 @@ function processGuildKickProposal(uint256 proposalIndex) public nonReentrant {
 
     function getProposalQueueLength() public view returns (uint256) {
         return proposalQueue.length;
+    }
+
+      function getProposalFlags(uint256 proposalId) public view returns (bool[5] memory) {
+        return proposals[proposalId].flags;
     }
 
     // can only ragequit if the latest proposal you voted YES on has been processed

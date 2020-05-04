@@ -1,7 +1,7 @@
 
 //Mirror of Factory in Full PeepsDAO.sol
 
-pragma solidity ^0.6.1;
+pragma solidity ^0.6.0;
 
 import "https://github.com/OpenZeppelin/openzeppelin-solidity/contracts/math/SafeMath.sol";
 import "https://github.com/OpenZeppelin/openzeppelin-solidity/contracts/utils/ReentrancyGuard.sol";
